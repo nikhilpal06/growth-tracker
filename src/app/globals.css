@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand: #0f6f9b;
+  --color-brand-dark: #0b5476;
+  --color-brand-light: #e3f0f7;
+  --color-ink: #1b2330;
+  --color-muted: #5a6372;
+  --color-line: #e2e5e9;
+  --color-surface: #ffffff;
+  --color-canvas: #f3f5f7;
+  --color-success: #1d7a4a;
+  --color-warning: #b45309;
+  --color-danger: #b3261e;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html, body { height: 100%; }
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .card { @apply bg-surface border border-line rounded-xl shadow-[0_1px_2px_rgba(0,0,0,0.04)]; }
+  .card-pad { @apply p-5; }
+  .btn, .btn-primary, .btn-secondary, .btn-ghost, .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 h-9 text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap;
+  }
+  .btn-primary { @apply bg-brand text-white hover:bg-brand-dark; }
+  .btn-secondary { @apply bg-surface text-brand border border-brand hover:bg-brand-light; }
+  .btn-ghost { @apply text-ink hover:bg-black/5; }
+  .btn-danger { @apply text-danger hover:bg-red-50; }
+  .btn-sm { @apply h-8 px-3 text-xs; }
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 placeholder:text-muted/70;
+  }
+  .label { @apply block text-xs font-semibold text-muted uppercase tracking-wide mb-1.5; }
+  .h1 { @apply text-2xl font-bold tracking-tight; }
+  .h2 { @apply text-lg font-semibold; }
+  .muted { @apply text-muted text-sm; }
+}
+
+/* Mobile: no zoom-on-focus on iOS (inputs must be >= 16px), safe-area padding */
+@media (max-width: 1023px) {
+  .input { font-size: 16px; }
+  .h1 { font-size: 1.375rem; }
+  body { padding-bottom: env(safe-area-inset-bottom); }
+}
