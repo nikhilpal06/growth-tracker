@@ -5,13 +5,14 @@ import type { GrowthChild, GrowthMeasurement } from "@/lib/db";
 import { api } from "@/lib/client";
 import { PageHeader, Spinner, useFlash } from "@/components/ui";
 import GrowthChart, { type ChartPoint } from "@/components/GrowthChart";
+import Markdown from "@/components/Markdown";
 import {
   CM_PER_IN, KG_PER_LB, MAX_AGE_MONTHS, MIN_AGE_MONTHS, ageInMonths, assess, bmi, displayLength, displayWeight, feetInches,
   formatAge, formatPercentile, midParentalHeight, todayIso, type Sex, type Units,
 } from "@/lib/growth";
-import { Plus, Pencil, Trash2, Save, X, Download, UserRoundPlus } from "lucide-react";
+import { Plus, Pencil, Trash2, Save, X, Download, UserRoundPlus, Sparkles, Square } from "lucide-react";
 
-interface Data { children: GrowthChild[]; measurements: GrowthMeasurement[] }
+interface Data { children: GrowthChild[]; measurements: GrowthMeasurement[]; ai: boolean; model: string }
 
 const UNITS_KEY = "growth:units";
 const CHILD_KEY = "growth:child";
@@ -34,6 +35,9 @@ export default function GrowthPage() {
   const [mForm, setMForm] = useState(emptyMeasure);
   const [editingM, setEditingM] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [explanation, setExplanation] = useState("");
+  const [explaining, setExplaining] = useState<AbortController | null>(null);
   const { flash, node } = useFlash();
 
   useEffect(() => {
@@ -88,7 +92,7 @@ export default function GrowthPage() {
   }
   function chooseChild(id: number) {
     setChildId(id);
-    setEditingM(null); setMForm(emptyMeasure());
+    setEditingM(null); setMForm(emptyMeasure()); setExplanation(""); setQuestion("");
     try { localStorage.setItem(CHILD_KEY, String(id)); } catch { /* ignore */ }
   }
 
@@ -123,7 +127,7 @@ export default function GrowthPage() {
     const n = data?.measurements.filter((m) => m.child_id === c.id).length ?? 0;
     if (!confirm(`Delete ${c.name} and ${n} measurement${n === 1 ? "" : "s"}? This cannot be undone.`)) return;
     await api(`/api/growth/children/${c.id}`, { method: "DELETE" });
-    setData((d) => d && { children: d.children.filter((x) => x.id !== c.id), measurements: d.measurements.filter((m) => m.child_id !== c.id) });
+    setData((d) => d && { ...d, children: d.children.filter((x) => x.id !== c.id), measurements: d.measurements.filter((m) => m.child_id !== c.id) });
     const next = data?.children.find((x) => x.id !== c.id);
     if (next) chooseChild(next.id); else { setChildId(null); setChildForm({ ...emptyChild }); }
   }
@@ -158,6 +162,31 @@ export default function GrowthPage() {
     await api(`/api/growth/measurements/${m.id}`, { method: "DELETE" });
     setData((d) => d && { ...d, measurements: d.measurements.filter((x) => x.id !== m.id) });
     if (editingM === m.id) { setEditingM(null); setMForm(emptyMeasure()); }
+  }
+
+  async function explain() {
+    if (!child) return;
+    explaining?.abort();
+    const ctrl = new AbortController();
+    setExplaining(ctrl); setExplanation("");
+    try {
+      const res = await fetch("/api/growth/explain", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ child_id: child.id, question }), signal: ctrl.signal });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error((d as { error?: string }).error ?? `Request failed (${res.status})`); }
+      const reader = res.body!.getReader();
+      const dec = new TextDecoder();
+      let acc = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        acc += dec.decode(value, { stream: true });
+        setExplanation(acc);
+      }
+      acc += dec.decode();
+      const i = acc.indexOf("[AI error]");
+      if (i >= 0) { setExplanation(acc.slice(0, i).trim()); flash(acc.slice(i + 10).trim(), "error"); } else setExplanation(acc);
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) flash(e instanceof Error ? e.message : String(e), "error");
+    } finally { setExplaining(null); }
   }
 
   function exportCsv() {
@@ -208,8 +237,8 @@ export default function GrowthPage() {
             <h2 className="h2">{editingChild ? "Edit child" : data.children.length ? "Add a child" : "Who are we tracking?"}</h2>
             {(data.children.length > 0) && <button className="btn-ghost btn-sm" onClick={() => { setChildForm(null); setEditingChild(null); }}><X size={14} /> Cancel</button>}
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <div><label className="label">Name</label><input className="input" value={childForm.name} onChange={(e) => setChildForm({ ...childForm, name: e.target.value })} placeholder="First name" /></div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+            <div className="col-span-2 lg:col-span-1"><label className="label">Name</label><input className="input" value={childForm.name} onChange={(e) => setChildForm({ ...childForm, name: e.target.value })} placeholder="First name" /></div>
             <div><label className="label">Birth date</label><input className="input" type="date" max={todayIso()} value={childForm.birth_date} onChange={(e) => setChildForm({ ...childForm, birth_date: e.target.value })} /></div>
             <div>
               <label className="label">Chart</label>
@@ -259,17 +288,47 @@ export default function GrowthPage() {
 
           <div id="measure-form" className="card card-pad mb-6">
             <h2 className="h2 mb-3">{editingM ? "Edit measurement" : "Add a measurement"}</h2>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[180px_1fr_1fr_2fr]">
-              <div><label className="label">Date</label><input className="input" type="date" min={child.birth_date} max={todayIso()} value={mForm.measured_on} onChange={(e) => setMForm({ ...mForm, measured_on: e.target.value })} /></div>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-[180px_1fr_1fr_2fr]">
+              <div className="col-span-2 lg:col-span-1"><label className="label">Date</label><input className="input" type="date" min={child.birth_date} max={todayIso()} value={mForm.measured_on} onChange={(e) => setMForm({ ...mForm, measured_on: e.target.value })} /></div>
               <div><label className="label">Stature ({lenUnit})</label><input className="input" inputMode="decimal" placeholder={units === "metric" ? "e.g. 104.5" : "e.g. 41.1"} value={mForm.stature} onChange={(e) => setMForm({ ...mForm, stature: e.target.value })} /></div>
               <div><label className="label">Weight ({wtUnit})</label><input className="input" inputMode="decimal" placeholder={units === "metric" ? "e.g. 17.2" : "e.g. 37.9"} value={mForm.weight} onChange={(e) => setMForm({ ...mForm, weight: e.target.value })} /></div>
-              <div><label className="label">Note</label><input className="input" placeholder="e.g. 4-year check-up, shoes off" value={mForm.note} onChange={(e) => setMForm({ ...mForm, note: e.target.value })} /></div>
+              <div className="col-span-2 lg:col-span-1"><label className="label">Note</label><input className="input" placeholder="e.g. 4-year check-up, shoes off" value={mForm.note} onChange={(e) => setMForm({ ...mForm, note: e.target.value })} /></div>
             </div>
-            <div className="mt-3 flex items-center gap-2">
+            <div className="mt-3 flex flex-wrap items-center gap-2">
               <button className="btn-primary" disabled={busy || !mForm.measured_on || (!mForm.stature.trim() && !mForm.weight.trim())} onClick={saveMeasurement}>{busy ? <Spinner /> : editingM ? <Save size={16} /> : <Plus size={16} />} {editingM ? "Save changes" : "Add"}</button>
               {editingM && <button className="btn-ghost" onClick={() => { setEditingM(null); setMForm(emptyMeasure()); }}><X size={16} /> Cancel</button>}
               <span className="muted">Measure standing height without shoes. Either value can be left blank.</span>
             </div>
+          </div>
+
+          <div className="card card-pad mb-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="h2 flex items-center gap-2"><Sparkles size={18} className="text-brand" /> What do these numbers mean?</h2>
+                <p className="muted mt-1">Claude reads {child.name}&apos;s record, the percentiles, and the trend, and explains them in plain language. General information, not medical advice.</p>
+              </div>
+            </div>
+            {data.ai ? (
+              <>
+                <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                  <input className="input flex-1" placeholder="Optional: ask something specific, e.g. Is she growing at a normal pace?" value={question} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !explaining) explain(); }} maxLength={1000} />
+                  {explaining ? (
+                    <button className="btn-secondary" onClick={() => explaining.abort()}><Square size={14} /> Stop</button>
+                  ) : (
+                    <button className="btn-primary" disabled={rows.length === 0} onClick={explain}><Sparkles size={16} /> {question.trim() ? "Ask" : "Explain"}</button>
+                  )}
+                </div>
+                {rows.length === 0 && <div className="muted mt-2">Add a measurement first.</div>}
+                {(explanation || explaining) && (
+                  <div className="mt-4 rounded-lg bg-canvas border border-line p-4">
+                    {explanation ? <Markdown text={explanation} /> : <div className="muted flex items-center gap-2"><Spinner /> Reading the record...</div>}
+                    {explanation && !explaining && <div className="text-xs text-muted mt-3">Written by Claude ({data.model}) from the CDC percentiles above. Talk to your pediatrician about anything that worries you.</div>}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="muted mt-3">Not enabled yet. Add an <code>ANTHROPIC_API_KEY</code> variable to the Railway service (or your local environment) and redeploy. See the README.</div>
+            )}
           </div>
 
           <div className="space-y-6 mb-6">
@@ -285,7 +344,27 @@ export default function GrowthPage() {
             {rows.length === 0 ? (
               <div className="px-5 py-10 text-center muted">No measurements yet. Add the first one above.</div>
             ) : (
-              <div className="overflow-x-auto">
+              <>
+              <ul className="md:hidden divide-y divide-line">
+                {[...rows].reverse().map((r) => (
+                  <li key={r.m.id} className={`px-4 py-3 ${editingM === r.m.id ? "bg-brand-light/40" : ""}`} style={{ fontVariantNumeric: "tabular-nums" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-semibold">{r.m.measured_on} <span className="font-normal text-muted">· {formatAge(r.age)}</span></div>
+                      <div className="flex items-center -mr-2">
+                        <button className="btn-ghost btn-sm" onClick={() => startEditMeasurement(r.m)} aria-label="Edit"><Pencil size={15} /></button>
+                        <button className="btn-danger btn-sm" onClick={() => removeMeasurement(r.m)} aria-label="Delete"><Trash2 size={15} /></button>
+                      </div>
+                    </div>
+                    <div className="mt-1 grid grid-cols-3 gap-2 text-sm">
+                      <div><div className="text-[11px] uppercase tracking-wide text-muted">Stature</div><div>{r.m.stature_cm !== null ? displayLength(r.m.stature_cm, units) : "–"}</div><div className="text-xs text-muted">{r.m.stature_cm !== null ? pct(r.stature, r.offChart) : ""}</div></div>
+                      <div><div className="text-[11px] uppercase tracking-wide text-muted">Weight</div><div>{r.m.weight_kg !== null ? displayWeight(r.m.weight_kg, units) : "–"}</div><div className="text-xs text-muted">{r.m.weight_kg !== null ? pct(r.weight, r.offChart) : ""}</div></div>
+                      <div><div className="text-[11px] uppercase tracking-wide text-muted">BMI</div><div>{r.bmi ? r.bmi.toFixed(1) : "–"}</div></div>
+                    </div>
+                    {r.m.note && <div className="mt-1 text-xs text-muted">{r.m.note}</div>}
+                  </li>
+                ))}
+              </ul>
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-sm" style={{ fontVariantNumeric: "tabular-nums" }}>
                   <thead>
                     <tr className="text-left text-xs uppercase tracking-wide text-muted">
@@ -320,6 +399,7 @@ export default function GrowthPage() {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </div>
 

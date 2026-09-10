@@ -8,6 +8,7 @@ A small self-hosted web app that tracks a child's growth on the CDC 2000 **"2 to
 - Optional parents' heights give a mid-parental target height, the purpose of the "Mother's / Father's stature" boxes on the paper chart.
 - Metric (cm/kg) or imperial (in/lb) display.
 - Several children can be tracked; each has their own record.
+- **"What do these numbers mean?"**: with an Anthropic API key set, Claude explains the record in plain language: what the percentiles mean, whether the child is tracking along a curve or crossing curves, growth velocity, anything commonly worth raising with the pediatrician, and suggested questions for the next check-up. You can also ask a specific question. The percentiles, z-scores, velocities, and attention flags are computed by the app first, so the model explains real numbers rather than inventing them. It is general information, not medical advice.
 
 The curves are computed from the CDC's published LMS tables (`statage.csv` and `wtage.csv`, embedded in `src/lib/growth-data.ts`) using the CDC formulas, so they match the printed chart. Ages are computed with the CDC convention of 30.4375 days per month. Measurements taken before age 2 are kept but marked "off chart".
 
@@ -36,6 +37,7 @@ The app ships with a `Dockerfile` and `railway.json`. It needs a persistent volu
    - `SESSION_SECRET` – any long random string.
    - `APP_URL` – the public URL from step 3, e.g. `https://growth-tracker-production.up.railway.app`.
    - `DATA_DIR` – `/data`.
+   - Optional: `ANTHROPIC_API_KEY` – enables the explanations. Each one costs a few cents with the default model (`claude-opus-5`); set `AI_MODEL` to change it.
 5. Add a **Volume** to the service (right-click the service → Attach Volume, or **Settings → Volumes**) and mount it at `/data`. This keeps the database across deploys.
 6. Deploy. Open the URL, sign in with `APP_PASSWORD`, add your child, and start logging.
 
@@ -44,6 +46,8 @@ Later pushes to the repository redeploy automatically.
 ## Environment variables
 
 See `.env.example`. Nothing is required on your own machine; `APP_PASSWORD` is required when hosted.
+
+When `ANTHROPIC_API_KEY` is set, the child's first name, birth date, and measurements are sent to the Anthropic API to write the explanation. Leave the variable unset if you would rather not.
 
 ## Backups
 

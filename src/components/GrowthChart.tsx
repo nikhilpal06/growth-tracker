@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, LabelList } from "recharts";
 import {
   CHART_PERCENTILES, CM_PER_IN, KG_PER_LB, MAX_AGE_MONTHS, MIN_AGE_MONTHS, referenceAt, referenceCurves,
@@ -32,6 +32,14 @@ const STRONG = new Set([5, 50, 95]);
 
 type Row = Record<string, number | undefined> & { age: number; ageMonths: number };
 
+function xTicks(lo: number, hi: number, narrow: boolean): number[] {
+  const step = narrow && hi - lo > 10 ? 2 : 1;
+  const t: number[] = [];
+  for (let a = lo; a <= hi; a += step) t.push(a);
+  if (t[t.length - 1] !== hi) t.push(hi);
+  return t;
+}
+
 function EndLabel(props: { x?: number; y?: number; index?: number; value?: number; total: number; text: string }) {
   const { x, y, index, total, text } = props;
   if (index !== total - 1 || x === undefined || y === undefined) return null;
@@ -44,7 +52,32 @@ function Dot(props: { cx?: number; cy?: number; payload?: Row }) {
   return <circle cx={cx} cy={cy} r={5} fill={CHILD} stroke="#ffffff" strokeWidth={2} />;
 }
 
+const NARROW = "(max-width: 639px)";
+function useNarrow() {
+  return useSyncExternalStore(
+    (cb) => { const mq = window.matchMedia(NARROW); mq.addEventListener("change", cb); return () => mq.removeEventListener("change", cb); },
+    () => window.matchMedia(NARROW).matches,
+    () => false,
+  );
+}
+
+type Zoom = "auto" | "fit" | "full";
+
 export default function GrowthChart({ sex, measure, units, childName, points }: Props) {
+  const narrow = useNarrow();
+  const [zoom, setZoom] = useState<Zoom>("auto");
+  const onChartPts = points.filter((p) => p.ageMonths >= MIN_AGE_MONTHS && p.ageMonths <= MAX_AGE_MONTHS);
+  // On phones the full 2 to 20 year span squeezes a young child's points into a corner, so zoom in by default there.
+  const fit = zoom === "auto" ? narrow && onChartPts.length > 0 : zoom === "fit";
+  const [xMin, xMax] = useMemo(() => {
+    if (!fit || !onChartPts.length) return [2, 20];
+    const ages = onChartPts.map((p) => p.ageMonths / 12);
+    let lo = Math.max(2, Math.floor(Math.min(...ages) - 1));
+    let hi = Math.min(20, Math.ceil(Math.max(...ages) + 2));
+    while (hi - lo < 4) { if (hi < 20) hi++; else lo--; }
+    return [lo, hi];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fit, points]);
   const toUnit = (v: number) => (units === "metric" ? v : measure === "stature" ? v / CM_PER_IN : v / KG_PER_LB);
   const unitLabel = measure === "stature" ? (units === "metric" ? "cm" : "in") : units === "metric" ? "kg" : "lb";
 
@@ -62,15 +95,20 @@ export default function GrowthChart({ sex, measure, units, childName, points }: 
       rows.push(row);
     }
     rows.sort((a, b) => a.age - b.age || (a.child === undefined ? -1 : 1));
-    return rows;
+    if (xMin === 2 && xMax === 20) return rows;
+    const first = rows.findIndex((r) => r.age >= xMin);
+    let last = rows.length - 1;
+    while (last > 0 && rows[last].age > xMax) last--;
+    return rows.slice(Math.max(0, first - 1), Math.min(rows.length, last + 2));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sex, measure, units, points]);
+  }, [sex, measure, units, points, xMin, xMax]);
 
   // Y range covers the 5th to 95th curves and every plotted point, snapped to a clean tick step.
   const { yMin, yMax, ticks } = useMemo(() => {
     let lo = Infinity;
     let hi = -Infinity;
     for (const r of data) {
+      if (r.age < xMin || r.age > xMax) continue;
       for (const k of ["p5", "p95", "child"]) {
         const v = r[k];
         if (v !== undefined) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
@@ -82,7 +120,7 @@ export default function GrowthChart({ sex, measure, units, childName, points }: 
     const t: number[] = [];
     for (let v = min; v <= max + 1e-9; v += step) t.push(v);
     return { yMin: min, yMax: max, ticks: t };
-  }, [data]);
+  }, [data, xMin, xMax]);
 
   const lastIndex = data.length;
   const title = measure === "stature" ? "Stature-for-age" : "Weight-for-age";
@@ -95,22 +133,28 @@ export default function GrowthChart({ sex, measure, units, childName, points }: 
           <h2 className="h2">{title}</h2>
           <div className="muted">CDC 2000, {sex === "F" ? "girls" : "boys"} 2 to 20 years. Percentile lines 5, 10, 25, 50, 75, 90, 95.</div>
         </div>
-        <div className="flex items-center gap-4 text-xs text-muted">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted">
           <span className="inline-flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-full" style={{ background: CHILD }} /> {childName}</span>
           <span className="inline-flex items-center gap-1.5"><span className="inline-block w-4 border-t-2" style={{ borderColor: REF_STRONG }} /> CDC percentiles</span>
+          {onChartPts.length > 0 && (
+            <span className="inline-flex rounded-full border border-line p-0.5" role="group" aria-label="Chart range">
+              <button type="button" onClick={() => setZoom("fit")} aria-pressed={fit} className={`px-2.5 h-6 rounded-full font-semibold ${fit ? "bg-brand text-white" : "text-muted hover:text-ink"}`}>Around {childName}</button>
+              <button type="button" onClick={() => setZoom("full")} aria-pressed={!fit} className={`px-2.5 h-6 rounded-full font-semibold ${!fit ? "bg-brand text-white" : "text-muted hover:text-ink"}`}>2 to 20</button>
+            </span>
+          )}
         </div>
       </div>
-      <div style={{ width: "100%", height: 380 }}>
+      <div style={{ width: "100%", height: narrow ? 300 : 380 }}>
         <ResponsiveContainer>
-          <ComposedChart data={data} margin={{ top: 10, right: 28, bottom: 8, left: 0 }}>
+          <ComposedChart data={data} margin={{ top: 10, right: narrow ? 22 : 28, bottom: 8, left: 0 }}>
             <CartesianGrid stroke={GRID} strokeWidth={1} />
             <XAxis
-              dataKey="age" type="number" domain={[2, 20]} ticks={[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]}
+              dataKey="age" type="number" domain={[xMin, xMax]} allowDataOverflow ticks={xTicks(xMin, xMax, narrow)}
               tick={{ fontSize: 11, fill: MUTED }} tickLine={false} axisLine={{ stroke: "#c3c2b7" }}
               label={{ value: "Age (years)", position: "insideBottom", offset: -4, fontSize: 11, fill: MUTED }}
             />
             <YAxis
-              type="number" domain={[yMin, yMax]} ticks={ticks} width={56} tick={{ fontSize: 11, fill: MUTED }} tickLine={false} axisLine={false}
+              type="number" domain={[yMin, yMax]} ticks={ticks} allowDataOverflow width={narrow ? 44 : 56} tick={{ fontSize: 11, fill: MUTED }} tickLine={false} axisLine={false}
               label={{ value: `${title.split("-")[0]} (${unitLabel})`, angle: -90, position: "insideLeft", offset: 12, fontSize: 11, fill: MUTED, style: { textAnchor: "middle" } }}
             />
             <Tooltip
@@ -135,11 +179,11 @@ export default function GrowthChart({ sex, measure, units, childName, points }: 
                 key={p} dataKey={`p${p}`} type="monotone" dot={false} activeDot={false} isAnimationActive={false} connectNulls
                 stroke={STRONG.has(p) ? REF_STRONG : REF_LIGHT} strokeWidth={STRONG.has(p) ? 1.5 : 1}
               >
-                <LabelList dataKey={`p${p}`} content={(lp) => <EndLabel {...(lp as { x?: number; y?: number; index?: number })} total={lastIndex} text={String(p)} />} />
+                {(!narrow || STRONG.has(p)) && <LabelList dataKey={`p${p}`} content={(lp) => <EndLabel {...(lp as { x?: number; y?: number; index?: number })} total={lastIndex} text={String(p)} />} />}
               </Line>
             ))}
             <Line dataKey="child" type="linear" stroke={CHILD} strokeWidth={2} connectNulls isAnimationActive={false} dot={<Dot />} activeDot={{ r: 7, fill: CHILD, stroke: "#ffffff", strokeWidth: 2 }} />
-            {points.length === 0 && <ReferenceLine x={11} stroke="none" label={{ value: "Add a measurement to plot it here", fill: MUTED, fontSize: 12 }} />}
+            {points.length === 0 && <ReferenceLine x={(xMin + xMax) / 2} stroke="none" label={{ value: "Add a measurement to plot it here", fill: MUTED, fontSize: 12 }} />}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
